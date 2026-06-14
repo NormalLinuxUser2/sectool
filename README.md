@@ -26,7 +26,7 @@ control may be illegal.
 Requires Python 3.9+.
 
 ```bash
-git clone <your-fork-url> sectool
+git clone https://github.com/NormalLinuxUser2/sectool/ sectool
 cd sectool
 
 python -m venv .venv
