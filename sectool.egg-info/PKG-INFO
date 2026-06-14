@@ -1,0 +1,27 @@
+Metadata-Version: 2.4
+Name: sectool
+Version: 1.0.0
+Summary: Cybersecurity multi-tool CLI: code, SSL/TLS, dependency, packet, password and crypto auditing
+Author: sectool contributors
+License: MIT
+Project-URL: Homepage, https://example.com/sectool
+Project-URL: Source, https://example.com/sectool
+Keywords: security,cli,sast,ssl,tls,cve,osv,passwords,crypto
+Classifier: Development Status :: 4 - Beta
+Classifier: Environment :: Console
+Classifier: Intended Audience :: Developers
+Classifier: Intended Audience :: Information Technology
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Topic :: Security
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: requests<3,>=2.31
+Requires-Dist: colorama<0.5,>=0.4.6
+Requires-Dist: cryptography>=42
+Provides-Extra: packets
+Requires-Dist: scapy<3,>=2.5; extra == "packets"
+Provides-Extra: dev
+Requires-Dist: pytest>=8; extra == "dev"
+Dynamic: license-file

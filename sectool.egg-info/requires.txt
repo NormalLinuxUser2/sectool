@@ -1,0 +1,9 @@
+requests<3,>=2.31
+colorama<0.5,>=0.4.6
+cryptography>=42
+
+[dev]
+pytest>=8
+
+[packets]
+scapy<3,>=2.5
