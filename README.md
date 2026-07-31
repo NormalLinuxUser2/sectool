@@ -1,7 +1,7 @@
 # sectool
 
-A modular cybersecurity multi-tool CLI for security teams. `sectool` bundles
-eight focused auditors behind a single, consistent command-line interface with
+A modular cybersecurity multi-tool CLI for security teams. `sectool` bundles ten
+focused auditors behind a single, consistent command-line interface with
 severity-ranked, color-coded output and machine-readable JSON or SARIF.
 
 | Command | Purpose |
@@ -13,6 +13,8 @@ severity-ranked, color-coded output and machine-readable JSON or SARIF.
 | `sectool pass` | Password strength auditor with HaveIBeenPwned breach checking (k-anonymity) |
 | `sectool crypto` | Auditor for weak cryptographic primitives and misuse |
 | `sectool headers` | HTTP response security-header auditor (HSTS, CSP, cookies, CORS) |
+| `sectool probe` | HTTP prober: redirect chain, title, server and technology fingerprint |
+| `sectool methods` | HTTP method enumerator that flags dangerous verbs (PUT/DELETE/TRACE/WebDAV) |
 | `sectool fuzz` | Threaded web fuzzer for content discovery and unexpected responses |
 
 ## Responsible use
@@ -200,36 +202,68 @@ Checks for missing or weak `Strict-Transport-Security`, `Content-Security-Policy
 credentials); missing `Secure`/`HttpOnly`/`SameSite` cookie flags; and version
 disclosure via `Server`/`X-Powered-By`.
 
+### HTTP probe / fingerprinter
+
+```bash
+# Probe a single URL (redirect chain, title, server, technologies)
+sectool probe example.com
+
+# Probe many hosts from a file
+sectool probe --list hosts.txt --json
+```
+
+Follows the redirect chain hop by hop, then reports the final status, page
+title, `Server`/`X-Powered-By` banners, response time and a technology
+fingerprint derived from headers, cookies and body markers (nginx, Apache, IIS,
+PHP, ASP.NET, WordPress, Drupal, Next.js, React, Cloudflare, and more). It flags
+cleartext-HTTP delivery, directory listing, version disclosure and server
+errors.
+
+### HTTP method audit
+
+```bash
+# Enumerate accepted methods and flag dangerous ones
+sectool methods https://example.com
+```
+
+Sends `OPTIONS` and actively probes `PUT`, `DELETE`, `PATCH`, `TRACE`,
+`CONNECT` and WebDAV `PROPFIND`. Enabled write methods (`PUT`/`DELETE`) are
+flagged high; `TRACE` (Cross-Site Tracing), `CONNECT` and WebDAV are flagged
+medium. The advertised `Allow` header is reported for cross-checking.
+
 ### Web fuzzer
 
 ```bash
 # Content discovery against a base URL (paths appended from the built-in wordlist)
 sectool fuzz http://testsite.local/
 
-# Explicit injection point with the FUZZ keyword and a custom wordlist
-sectool fuzz "http://testsite.local/FUZZ" --wordlist paths.txt --ext .php --ext .bak
+# Explicit injection point with the FUZZ keyword and multiple wordlists
+sectool fuzz "http://testsite.local/FUZZ" --wordlist paths.txt --wordlist extra.txt --ext .php --ext .bak
 
-# Tune concurrency and filter noise by status code, response size or word count
-sectool fuzz http://testsite.local/ --threads 16 --match-code 200,301,403 --filter-size 0
+# Filter noise by status code, response size, word count or body regex
+sectool fuzz http://testsite.local/ --threads 16 --match-code 200,301,403 --filter-regex "Not Found"
 
-# Recurse into discovered directories up to two levels deep
-sectool fuzz http://testsite.local/ --recursion --recursion-depth 2
+# Recurse into discovered directories, rate-limit, and retry flaky requests
+sectool fuzz http://testsite.local/ --recursion --recursion-depth 2 --delay 0.1 --retries 2
 ```
 
 Requests each candidate path concurrently and reports responses that stand out.
 It auto-calibrates a baseline from a random path to suppress wildcard/"soft-404"
 servers, and classifies notable hits — an exposed `.git` directory, `.env`,
 private keys, database dumps, backups, admin panels — at an appropriate
-severity. Use the `FUZZ` keyword to fuzz any part of the URL (or the `--data`
-body).
+severity. Hits capture the page title, content type and response time. Use the
+`FUZZ` keyword to fuzz any part of the URL (or the `--data` body).
 
 With `--recursion`, any discovered directory (a redirect to a trailing slash, or
 an extensionless `200`) is re-fuzzed with the same wordlist up to
 `--recursion-depth` levels, so nested paths like `/admin/.env` are found
 automatically. Responses can be included or excluded by status code
-(`--match-code`/`--filter-code`), byte size (`--match-size`/`--filter-size`) or
-word count (`--match-word`/`--filter-word`). **Only fuzz targets you own or are
-explicitly authorized to test.**
+(`--match-code`/`--filter-code`), byte size (`--match-size`/`--filter-size`),
+word count (`--match-word`/`--filter-word`) or body content
+(`--match-regex`/`--filter-regex`). `--wordlist` is repeatable, `--cookie` sends
+session cookies, `--delay` rate-limits, `--retries` absorbs transient failures,
+and `--follow-redirects` chases redirects instead of reporting them. **Only fuzz
+targets you own or are explicitly authorized to test.**
 
 ## Output and severity
 
@@ -265,6 +299,8 @@ sectool/
 │       ├── passwords.py    Password auditor (HIBP)
 │       ├── crypto.py       Crypto auditor
 │       ├── headers.py      HTTP security-header auditor
+│       ├── probe.py        HTTP prober / technology fingerprinter
+│       ├── methods.py      HTTP method auditor
 │       └── fuzz.py         Web content-discovery fuzzer
 ├── tests/                  pytest suite
 ├── requirements.txt

@@ -5,7 +5,7 @@ from urllib.parse import urlparse, urlunparse
 
 import requests
 
-DEFAULT_USER_AGENT = "sectool/1.1 (+https://github.com/NormalLinuxUser2/sectool)"
+DEFAULT_USER_AGENT = "sectool/1.2 (+https://github.com/NormalLinuxUser2/sectool)"
 
 
 def normalize_url(target: str, default_scheme: str = "https") -> str:
