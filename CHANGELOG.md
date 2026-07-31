@@ -4,6 +4,26 @@ All notable changes to `sectool` are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0]
+
+### Added
+- **`probe` command** — an HTTP prober/fingerprinter that traces the redirect
+  chain hop by hop and reports final status, page title, `Server`/`X-Powered-By`
+  banners, response time and a technology fingerprint (from headers, cookies and
+  body markers). Flags cleartext HTTP, directory listing, version disclosure and
+  server errors. Supports probing many hosts via `--list`.
+- **`methods` command** — enumerates accepted HTTP methods (`OPTIONS` + active
+  probing) and flags dangerous verbs: `PUT`/`DELETE` (high), `TRACE`/`CONNECT`/
+  WebDAV `PROPFIND` (medium). Reports the advertised `Allow` header.
+- **Fuzzer enhancements**: body-content filtering (`--match-regex`/
+  `--filter-regex`), transient-error retries (`--retries`), rate limiting
+  (`--delay`), multiple wordlists (repeatable `--wordlist`), session cookies
+  (`--cookie`), redirect following (`--follow-redirects`), and per-hit page
+  title, content-type and response-time capture.
+
+### Changed
+- Bumped version to 1.2.0.
+
 ## [1.1.0]
 
 ### Added

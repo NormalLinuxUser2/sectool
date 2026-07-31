@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sectool"
-version = "1.1.0"
-description = "Cybersecurity multi-tool CLI: code, SSL/TLS, dependency, packet, password, crypto, HTTP-header and web-fuzzing auditing"
+version = "1.2.0"
+description = "Cybersecurity multi-tool CLI: code, SSL/TLS, dependency, packet, password, crypto, HTTP-header, HTTP-probe, HTTP-method and web-fuzzing auditing"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }

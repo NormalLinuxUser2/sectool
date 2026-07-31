@@ -10,9 +10,20 @@ from .core.errors import ModuleUnavailableError, SectoolError
 from .core.findings import Finding, Severity
 from .core.logging import setup_logging
 from .core.output import Reporter
-from .modules import crypto, deps, fuzz, headers, packets, passwords, scan, ssl_audit
+from .modules import (
+    crypto,
+    deps,
+    fuzz,
+    headers,
+    methods,
+    packets,
+    passwords,
+    probe,
+    scan,
+    ssl_audit,
+)
 
-MODULES = [scan, ssl_audit, deps, packets, passwords, crypto, headers, fuzz]
+MODULES = [scan, ssl_audit, deps, packets, passwords, crypto, headers, probe, methods, fuzz]
 
 EXIT_OK = 0
 EXIT_FINDINGS = 1

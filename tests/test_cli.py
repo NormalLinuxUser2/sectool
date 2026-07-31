@@ -3,8 +3,10 @@ from sectool.cli import EXIT_ERROR, EXIT_FINDINGS, EXIT_OK, build_parser, main
 
 def test_parser_builds_all_commands():
     parser = build_parser()
-    needs_arg = ("scan", "ssl", "crypto", "fuzz", "headers")
-    for command in ("scan", "ssl", "deps", "packets", "pass", "crypto", "fuzz", "headers"):
+    needs_arg = ("scan", "ssl", "crypto", "fuzz", "headers", "probe", "methods")
+    commands = ("scan", "ssl", "deps", "packets", "pass", "crypto",
+                "fuzz", "headers", "probe", "methods")
+    for command in commands:
         args = parser.parse_args([command] + (["x"] if command in needs_arg else []))
         assert args.command == command
 

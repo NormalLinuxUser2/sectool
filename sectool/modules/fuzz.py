@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -39,6 +40,9 @@ DEFAULT_WORDLIST = (
     "reset", "forgot", "token", "tokens", "swagger", "swagger-ui.html", "openapi.json",
     "readme.md", "README.md", "CHANGELOG.md", "LICENSE", "TODO", "notes.txt",
 )
+
+_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+MAX_TITLE = 120
 
 
 @dataclass
@@ -95,6 +99,9 @@ class FuzzHit:
     size: int
     words: int = 0
     redirect: Optional[str] = None
+    title: Optional[str] = None
+    content_type: Optional[str] = None
+    elapsed_ms: Optional[float] = None
 
 
 @dataclass
@@ -107,20 +114,23 @@ class FuzzResult:
     baseline_status: Optional[int] = None
 
 
-def load_words(path: Optional[str]) -> List[str]:
-    if not path:
+def load_words(paths: Optional[Iterable[str]]) -> List[str]:
+    paths = [p for p in (paths or []) if p]
+    if not paths:
         return list(DEFAULT_WORDLIST)
     words: List[str] = []
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as handle:
-            for raw in handle:
-                word = raw.strip()
-                if word and not word.startswith("#"):
-                    words.append(word)
-    except OSError as exc:
-        raise SectoolError(f"could not read wordlist '{path}': {exc}")
+    for path in paths:
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as handle:
+                for raw in handle:
+                    word = raw.strip()
+                    if word and not word.startswith("#"):
+                        words.append(word)
+        except OSError as exc:
+            raise SectoolError(f"could not read wordlist '{path}': {exc}")
+    words = list(dict.fromkeys(words))
     if not words:
-        raise SectoolError(f"wordlist '{path}' is empty")
+        raise SectoolError("wordlist(s) contained no usable entries")
     return words
 
 
@@ -144,53 +154,78 @@ def build_url(target: str, word: str) -> str:
     return target + "/" + word
 
 
+def _response_text(response) -> str:
+    text = getattr(response, "text", None)
+    if text is not None:
+        return text
+    content = getattr(response, "content", b"") or b""
+    if isinstance(content, bytes):
+        return content.decode("utf-8", "replace")
+    return str(content)
+
+
 def _response_size(response) -> int:
     content = getattr(response, "content", None)
     if content is not None:
         return len(content)
-    text = getattr(response, "text", "") or ""
-    return len(text)
+    return len(_response_text(response))
 
 
 def _response_words(response) -> int:
-    text = getattr(response, "text", None)
-    if text is None:
-        content = getattr(response, "content", b"") or b""
-        if isinstance(content, bytes):
-            text = content.decode("utf-8", "replace")
-        else:
-            text = str(content)
-    return len(text.split())
+    return len(_response_text(response).split())
+
+
+def _content_type(response) -> Optional[str]:
+    headers = getattr(response, "headers", {}) or {}
+    value = headers.get("Content-Type") or headers.get("content-type")
+    if not value:
+        return None
+    return value.split(";")[0].strip().lower()
+
+
+def _elapsed_ms(response) -> Optional[float]:
+    elapsed = getattr(response, "elapsed", None)
+    if elapsed is None:
+        return None
+    try:
+        return round(elapsed.total_seconds() * 1000, 1)
+    except AttributeError:
+        return None
+
+
+def _extract_title(text: str, content_type: Optional[str]) -> Optional[str]:
+    if not text or (content_type and "html" not in content_type):
+        return None
+    match = _TITLE_RE.search(text)
+    if not match:
+        return None
+    title = " ".join(match.group(1).split())
+    if not title:
+        return None
+    return title[:MAX_TITLE]
+
+
+def _parse_int_set(value: Optional[str], label: str) -> Optional[Set[int]]:
+    if not value:
+        return None
+    result: Set[int] = set()
+    for token in value.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            result.add(int(token))
+        except ValueError:
+            raise SectoolError(f"invalid {label} in filter: '{token}'")
+    return result or None
 
 
 def _parse_code_set(value: Optional[str]) -> Optional[Set[int]]:
-    if not value:
-        return None
-    codes: Set[int] = set()
-    for token in value.split(","):
-        token = token.strip()
-        if not token:
-            continue
-        try:
-            codes.add(int(token))
-        except ValueError:
-            raise SectoolError(f"invalid status code in filter: '{token}'")
-    return codes or None
+    return _parse_int_set(value, "status code")
 
 
 def _parse_size_set(value: Optional[str]) -> Optional[Set[int]]:
-    if not value:
-        return None
-    sizes: Set[int] = set()
-    for token in value.split(","):
-        token = token.strip()
-        if not token:
-            continue
-        try:
-            sizes.add(int(token))
-        except ValueError:
-            raise SectoolError(f"invalid size in filter: '{token}'")
-    return sizes or None
+    return _parse_int_set(value, "size")
 
 
 @dataclass
@@ -201,6 +236,8 @@ class FuzzFilters:
     filter_sizes: Optional[Set[int]] = None
     match_words: Optional[Set[int]] = None
     filter_words: Optional[Set[int]] = None
+    match_regex: Optional[re.Pattern] = None
+    filter_regex: Optional[re.Pattern] = None
 
     def accepts(self, status: int, size: int, words: int = 0) -> bool:
         if self.match_codes is not None and status not in self.match_codes:
@@ -217,15 +254,38 @@ class FuzzFilters:
             return False
         return True
 
+    def accepts_body(self, text: str) -> bool:
+        if self.match_regex is not None and not self.match_regex.search(text):
+            return False
+        if self.filter_regex is not None and self.filter_regex.search(text):
+            return False
+        return True
 
-def _request(session, method: str, url: str, timeout: float, data: Optional[str]):
+
+def _request(session, method: str, url: str, timeout: float, data: Optional[str],
+             follow: bool = False):
     return session.request(
         method,
         url,
         timeout=timeout,
         data=data,
-        allow_redirects=False,
+        allow_redirects=follow,
     )
+
+
+def _request_with_retries(session, method, url, timeout, data, follow, retries, delay, result):
+    attempt = 0
+    while True:
+        if delay:
+            time.sleep(delay)
+        try:
+            return _request(session, method, url, timeout, data, follow)
+        except requests.RequestException:
+            if attempt >= retries:
+                result.errors += 1
+                return None
+            attempt += 1
+            time.sleep(min(0.25 * attempt, 2.0))
 
 
 def _calibrate(session, target: str, method: str, timeout: float, data: Optional[str],
@@ -263,27 +323,34 @@ def _child_base(base: str, word: str) -> str:
 
 def _fuzz_base(
     pool, session, base, words, method, timeout, data, filters,
-    base_status, base_size, result,
+    base_status, base_size, follow, retries, delay, result,
 ) -> List[FuzzHit]:
     def probe(word: str) -> Optional[FuzzHit]:
         url = build_url(base, word)
-        try:
-            response = _request(session, method, url, timeout, data)
-        except requests.RequestException:
-            result.errors += 1
+        response = _request_with_retries(
+            session, method, url, timeout, data, follow, retries, delay, result
+        )
+        if response is None:
             return None
         status = int(getattr(response, "status_code", 0))
         size = _response_size(response)
-        word_count = _response_words(response)
+        text = _response_text(response)
+        word_count = len(text.split())
         if not filters.accepts(status, size, word_count):
             return None
         if base_status is not None and status == base_status and size == base_size:
             return None
+        if not filters.accepts_body(text):
+            return None
+        content_type = _content_type(response)
         redirect = None
         if status in (301, 302, 303, 307, 308):
             redirect = (getattr(response, "headers", {}) or {}).get("Location")
-        return FuzzHit(word=word, url=url, status=status, size=size,
-                       words=word_count, redirect=redirect)
+        return FuzzHit(
+            word=word, url=url, status=status, size=size, words=word_count,
+            redirect=redirect, title=_extract_title(text, content_type),
+            content_type=content_type, elapsed_ms=_elapsed_ms(response),
+        )
 
     hits: List[FuzzHit] = []
     futures = {pool.submit(probe, word): word for word in words}
@@ -306,6 +373,9 @@ def run_fuzz(
     filters: Optional[FuzzFilters] = None,
     calibrate: bool = True,
     recursion_depth: int = 0,
+    follow: bool = False,
+    retries: int = 0,
+    delay: float = 0.0,
     logger=None,
 ) -> FuzzResult:
     filters = filters or FuzzFilters()
@@ -335,7 +405,7 @@ def run_fuzz(
                     result.baseline_status, result.baseline_size = base_status, base_size
 
             hits = _fuzz_base(pool, session, base, words, method, timeout, data,
-                              filters, base_status, base_size, result)
+                              filters, base_status, base_size, follow, retries, delay, result)
             result.hits.extend(hits)
 
             if depth < recursion_depth:
@@ -350,11 +420,33 @@ def run_fuzz(
     return result
 
 
+def _is_accessible(status: int) -> bool:
+    """A resource is only 'exposed' if the server actually served it.
+
+    2xx means it was returned; a 3xx redirect points somewhere real. 401/403
+    mean the path is protected (not exposed) and 404/4xx/5xx mean it is absent
+    or errored, so those must never raise a sensitive-exposure finding.
+    """
+    return 200 <= status < 300 or status in (301, 302, 303, 307, 308)
+
+
 def _classify(hit: FuzzHit) -> Optional[SensitiveRule]:
+    if not _is_accessible(hit.status):
+        return None
     for rule in SENSITIVE_RULES:
         if rule.pattern.search(hit.url) or rule.pattern.search(hit.word):
             return rule
     return None
+
+
+def _describe(hit: FuzzHit) -> str:
+    parts = [f"status {hit.status}", f"{hit.size} bytes", f"{hit.words} words"]
+    if hit.elapsed_ms is not None:
+        parts.append(f"{hit.elapsed_ms:.0f} ms")
+    text = "Reachable at " + ", ".join(parts) + "."
+    if hit.title:
+        text += f" Title: {hit.title!r}."
+    return text
 
 
 def hits_to_findings(result: FuzzResult) -> List[Finding]:
@@ -363,13 +455,16 @@ def hits_to_findings(result: FuzzResult) -> List[Finding]:
         location = hit.url
         if hit.redirect:
             location = f"{hit.url} -> {hit.redirect}"
-        meta = {"status": hit.status, "size": hit.size, "words": hit.words, "word": hit.word}
+        meta = {
+            "status": hit.status, "size": hit.size, "words": hit.words, "word": hit.word,
+            "content_type": hit.content_type, "title": hit.title, "elapsed_ms": hit.elapsed_ms,
+        }
         rule = _classify(hit)
         if rule is not None:
             findings.append(Finding(
                 rule.severity,
                 f"{rule.title} ({hit.status})",
-                f"Reachable at status {hit.status}, {hit.size} bytes, {hit.words} words.",
+                _describe(hit),
                 location=location,
                 recommendation=rule.recommendation,
                 category="content-discovery",
@@ -381,7 +476,7 @@ def hits_to_findings(result: FuzzResult) -> List[Finding]:
         findings.append(Finding(
             severity,
             f"Discovered path '{hit.word}' ({hit.status})",
-            f"The path responded with status {hit.status}, {hit.size} bytes, {hit.words} words.",
+            _describe(hit),
             location=location,
             recommendation="Confirm the resource is intended to be publicly reachable.",
             category="content-discovery",
@@ -396,7 +491,10 @@ def configure_parser(parser) -> None:
         help="Target URL. Use the FUZZ keyword for the injection point, "
              "or provide a base URL to brute-force paths (e.g. http://host/).",
     )
-    parser.add_argument("--wordlist", metavar="FILE", help="Wordlist file (default: built-in list)")
+    parser.add_argument(
+        "--wordlist", action="append", dest="wordlists", default=[], metavar="FILE",
+        help="Wordlist file (repeatable; default: built-in list)",
+    )
     parser.add_argument(
         "--ext", action="append", dest="extensions", default=[], metavar="EXT",
         help="Append extension(s) to each word, e.g. --ext .php (repeatable)",
@@ -407,20 +505,41 @@ def configure_parser(parser) -> None:
         "--header", action="append", dest="headers", default=[], metavar="H",
         help="Extra request header 'Name: value' (repeatable)",
     )
+    parser.add_argument(
+        "--cookie", action="append", dest="cookies", default=[], metavar="C",
+        help="Cookie 'name=value' to send (repeatable)",
+    )
     parser.add_argument("--user-agent", default=DEFAULT_USER_AGENT, help="Override the User-Agent")
     parser.add_argument("--threads", type=int, default=8, help="Concurrent requests (default: 8)")
     parser.add_argument("--timeout", type=float, default=10.0, help="Per-request timeout in seconds")
+    parser.add_argument("--retries", type=int, default=0, metavar="N",
+                        help="Retry transient network errors N times (default: 0)")
+    parser.add_argument("--delay", type=float, default=0.0, metavar="SECONDS",
+                        help="Delay before each request, for rate limiting (default: 0)")
+    parser.add_argument("--follow-redirects", action="store_true",
+                        help="Follow redirects instead of reporting them")
     parser.add_argument("--match-code", metavar="CODES", help="Only report these status codes, e.g. 200,204,301")
     parser.add_argument("--filter-code", metavar="CODES", help="Drop these status codes, e.g. 404,400")
     parser.add_argument("--match-size", metavar="SIZES", help="Only report these byte sizes")
     parser.add_argument("--filter-size", metavar="SIZES", help="Drop these byte sizes")
     parser.add_argument("--match-word", metavar="COUNTS", help="Only report these response word counts")
     parser.add_argument("--filter-word", metavar="COUNTS", help="Drop these response word counts")
+    parser.add_argument("--match-regex", metavar="RE", help="Only report responses whose body matches this regex")
+    parser.add_argument("--filter-regex", metavar="RE", help="Drop responses whose body matches this regex")
     parser.add_argument("--recursion", action="store_true", help="Recurse into discovered directories")
     parser.add_argument("--recursion-depth", type=int, default=1, metavar="N",
                         help="Maximum recursion depth when --recursion is set (default: 1)")
     parser.add_argument("--no-calibrate", action="store_true", help="Disable wildcard/baseline auto-filtering")
     parser.add_argument("--insecure", action="store_true", help="Do not verify TLS certificates")
+
+
+def _compile(pattern: Optional[str], label: str) -> Optional[re.Pattern]:
+    if not pattern:
+        return None
+    try:
+        return re.compile(pattern)
+    except re.error as exc:
+        raise SectoolError(f"invalid {label} regex: {exc}")
 
 
 def run(args, context: Context) -> List[Finding]:
@@ -433,7 +552,7 @@ def run(args, context: Context) -> List[Finding]:
     else:
         target = normalize_url(args.target, default_scheme="http")
 
-    words = expand_words(load_words(args.wordlist), args.extensions)
+    words = expand_words(load_words(args.wordlists), args.extensions)
 
     filters = FuzzFilters(
         match_codes=_parse_code_set(args.match_code),
@@ -442,14 +561,23 @@ def run(args, context: Context) -> List[Finding]:
         filter_sizes=_parse_size_set(args.filter_size),
         match_words=_parse_size_set(args.match_word),
         filter_words=_parse_size_set(args.filter_word),
+        match_regex=_compile(args.match_regex, "--match-regex"),
+        filter_regex=_compile(args.filter_regex, "--filter-regex"),
     )
     if filters.filter_codes is None and filters.match_codes is None:
-        filters.filter_codes = {404}
+        filters.filter_codes = {403, 404}
 
     try:
         extra_headers = parse_headers(args.headers)
     except ValueError as exc:
         raise SectoolError(str(exc))
+    if args.cookies:
+        extra_headers["Cookie"] = "; ".join(c.strip() for c in args.cookies if c.strip())
+
+    if args.retries < 0:
+        raise SectoolError("--retries must be zero or positive")
+    if args.delay < 0:
+        raise SectoolError("--delay must be zero or positive")
 
     session = build_session(
         user_agent=args.user_agent,
@@ -473,6 +601,9 @@ def run(args, context: Context) -> List[Finding]:
         filters=filters,
         calibrate=not args.no_calibrate,
         recursion_depth=recursion_depth,
+        follow=args.follow_redirects,
+        retries=args.retries,
+        delay=args.delay,
         logger=context.logger,
     )
 
